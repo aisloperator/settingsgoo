@@ -64,12 +64,15 @@ fn build_ui(app: &gtk::Application) {
         .resize_start_child(false)
         .build();
 
+    // No custom titlebar: GTK then uses the platform's normal decorations.
+    // On X11 the window manager draws the titlebar; on Wayland GTK uses
+    // server-side decorations if the compositor offers them, and otherwise
+    // draws a plain titlebar itself (GTK_CSD=1 forces client-side ones).
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("Settings")
         .default_width(920)
         .default_height(640)
-        .titlebar(&gtk::HeaderBar::new())
         .child(&paned)
         .build();
     window.present();
