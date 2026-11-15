@@ -972,13 +972,6 @@ impl UsersPage {
                     .any(|(m, s)| m == n && *s != Membership::Removed)
             })
             .collect();
-        others.sort_by_key(|n| n.to_lowercase());
-        if others.is_empty() {
-            return;
-        }
-        let mut items = vec![(String::new(), "Choose…".to_string())];
-        items.extend(sys::same(&others));
-        let choice = Choice::new(&items, "");
         let first_uid = first_user_uid();
         let reasons: HashMap<String, String> = groups
             .iter()
@@ -987,6 +980,15 @@ impl UsersPage {
                 Some((g.name.clone(), why))
             })
             .collect();
+        // Groups that can be chosen first, then the grayed-out ones; each
+        // part alphabetically.
+        others.sort_by_key(|n| (reasons.contains_key(n), n.to_lowercase()));
+        if others.is_empty() {
+            return;
+        }
+        let mut items = vec![(String::new(), "Choose…".to_string())];
+        items.extend(sys::same(&others));
+        let choice = Choice::new(&items, "");
         choice.set_disabled(&reasons);
         let add = gtk::Button::with_label("Add");
         let hbox = gtk::Box::builder().spacing(6).build();
