@@ -161,6 +161,17 @@ pub fn row(
     subtitle: Option<&str>,
     control: &impl IsA<gtk::Widget>,
 ) {
+    row_with_icon(list, None, title, subtitle, control);
+}
+
+/// Like [`row`], with an optional icon (by icon name) at the start.
+pub fn row_with_icon(
+    list: &gtk::ListBox,
+    icon: Option<&str>,
+    title: &str,
+    subtitle: Option<&str>,
+    control: &impl IsA<gtk::Widget>,
+) {
     let labels = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .valign(gtk::Align::Center)
@@ -179,6 +190,9 @@ pub fn row(
         .margin_start(12)
         .margin_end(12)
         .build();
+    if let Some(icon) = icon {
+        hbox.append(&gtk::Image::from_icon_name(icon));
+    }
     hbox.append(&labels);
     control.set_valign(gtk::Align::Center);
     hbox.append(control);
@@ -188,6 +202,13 @@ pub fn row(
             .child(&hbox)
             .build(),
     );
+}
+
+/// Removes all children of a box.
+pub fn clear(container: &gtk::Box) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
 }
 
 /// A read-only, selectable value label for information rows.

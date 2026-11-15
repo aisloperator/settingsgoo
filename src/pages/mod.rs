@@ -4,8 +4,10 @@ mod about;
 mod appearance;
 mod datetime;
 mod displays;
+pub mod network;
 mod region;
 mod sound;
+mod wifi;
 
 pub struct Page {
     pub id: &'static str,
@@ -15,6 +17,16 @@ pub struct Page {
 
 pub fn all() -> Vec<Page> {
     vec![
+        Page {
+            id: "wifi",
+            title: "Wi-Fi",
+            widget: wifi::build(),
+        },
+        Page {
+            id: "network",
+            title: "Network",
+            widget: network::build(),
+        },
         Page {
             id: "appearance",
             title: "Appearance",

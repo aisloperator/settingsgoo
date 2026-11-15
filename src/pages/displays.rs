@@ -9,9 +9,7 @@ use gtk::prelude::*;
 use crate::sys;
 
 fn fill(container: &gtk::Box, monitors: &gtk::gio::ListModel) {
-    while let Some(child) = container.first_child() {
-        container.remove(&child);
-    }
+    sys::clear(container);
     for i in 0..monitors.n_items() {
         let Some(m) = monitors.item(i).and_downcast::<gdk::Monitor>() else {
             continue;
