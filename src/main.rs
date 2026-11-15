@@ -1,4 +1,4 @@
-//! settingsgoo — a desktop-environment-neutral settings app for Linux (X11 and Wayland).
+//! SettingsGoo — a desktop-environment-neutral settings app for Linux (X11 and Wayland).
 
 mod pages;
 mod sys;
@@ -6,6 +6,8 @@ mod sys;
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 
+/// The program's display name. Code and filenames use lowercase `settingsgoo`.
+pub const APP_NAME: &str = "SettingsGoo";
 const APP_ID: &str = "com.aisloperator.settingsgoo";
 
 const CSS: &str = "
@@ -15,8 +17,17 @@ const CSS: &str = "
 ";
 
 fn main() -> glib::ExitCode {
+    glib::set_application_name(APP_NAME);
     let app = gtk::Application::builder().application_id(APP_ID).build();
-    app.connect_startup(|_| {
+    app.connect_startup(|app| {
+        // Ctrl+Q quits; Ctrl+W closes the window (which also quits, as there is only one).
+        let quit = gtk::gio::ActionEntry::builder("quit")
+            .activate(|app: &gtk::Application, _, _| app.quit())
+            .build();
+        app.add_action_entries([quit]);
+        app.set_accels_for_action("app.quit", &["<Control>q"]);
+        app.set_accels_for_action("window.close", &["<Control>w"]);
+
         let provider = gtk::CssProvider::new();
         provider.load_from_string(CSS);
         if let Some(display) = gdk::Display::default() {
@@ -70,7 +81,7 @@ fn build_ui(app: &gtk::Application) {
     // draws a plain titlebar itself (GTK_CSD=1 forces client-side ones).
     let window = gtk::ApplicationWindow::builder()
         .application(app)
-        .title("Settings")
+        .title(APP_NAME)
         .default_width(920)
         .default_height(640)
         .child(&paned)

@@ -166,7 +166,7 @@ pub fn build() -> gtk::Widget {
     sys::row(&list, "GTK", None, &sys::value_label(&gtk_version));
     sys::row(
         &list,
-        "settingsgoo",
+        crate::APP_NAME,
         Some("By AI Sloperator with Claude Code"),
         &sys::value_label(env!("CARGO_PKG_VERSION")),
     );

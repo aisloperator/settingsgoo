@@ -1,4 +1,4 @@
-# settingsgoo
+# SettingsGoo
 
 A desktop settings app for Linux that works under both X11 and Wayland, independent of any particular window manager or compositor.
 
@@ -28,6 +28,11 @@ If a service or tool is missing, its page says so instead of failing.
 ### Not included (yet)
 
 Settings with no standard interface shared by X11 and the various Wayland compositors are left out for now. These include monitor arrangement and resolution, pointer and touchpad settings, keyboard repeat rate, and per-session keyboard layouts. They can be added once the window manager or compositor is chosen.
+
+## Keyboard shortcuts
+
+- Ctrl+Q — quit
+- Ctrl+W — close the window
 
 ## Building
 
