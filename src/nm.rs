@@ -82,8 +82,11 @@ fn object_path(p: &str) -> ObjectPath {
 pub struct Dict(glib::VariantDict);
 
 impl Dict {
+    /// Wraps an `a{sv}` value. Anything else gives an empty dictionary, so
+    /// unexpected data from the service can't crash the app.
     fn from(v: &glib::Variant) -> Self {
-        Dict(glib::VariantDict::new(Some(v)))
+        let ok = v.type_() == glib::VariantTy::VARDICT;
+        Dict(glib::VariantDict::new(ok.then_some(v)))
     }
     fn value(&self, key: &str) -> Option<glib::Variant> {
         self.0.lookup_value(key, None)
@@ -115,10 +118,15 @@ impl Dict {
             .map(|v| v.iter().map(|c| Dict::from(&c)).collect())
             .unwrap_or_default()
     }
-    /// A nested dictionary (`a{sv}` inside `a{sa{sv}}`).
-    fn dict(&self, key: &str) -> Option<Dict> {
-        self.value(key).map(|v| Dict::from(&v))
-    }
+}
+
+/// One section of a connection's settings (`a{sa{sv}}`, as returned by
+/// `GetSettings`), such as `802-11-wireless`.
+fn settings_section(settings: &glib::Variant, name: &str) -> Option<Dict> {
+    settings
+        .iter()
+        .find(|entry| entry.child_value(0).str() == Some(name))
+        .map(|entry| Dict::from(&entry.child_value(1)))
 }
 
 /// All properties of one interface of an object.
@@ -400,8 +408,7 @@ fn saved_wifi() -> HashMap<String, String> {
         ) else {
             continue;
         };
-        let s = Dict::from(&s.child_value(0));
-        if let Some(w) = s.dict("802-11-wireless") {
+        if let Some(w) = settings_section(&s.child_value(0), "802-11-wireless") {
             let ssid = String::from_utf8_lossy(&w.bytes("ssid")).into_owned();
             if !ssid.is_empty() {
                 saved.insert(ssid, path);
@@ -580,6 +587,27 @@ mod tests {
         assert_eq!(Security::from_flags(1, 0, 0x500), Security::Psk);
         assert_eq!(Security::from_flags(1, 0, 0x200), Security::Enterprise);
         assert_eq!(Security::from_flags(0, 0, 0x800), Security::Owe);
+    }
+
+    /// Reads every saved connection's settings from the running
+    /// NetworkManager, if there is one. This used to panic.
+    #[test]
+    fn read_saved_connections() {
+        let _ = saved_wifi();
+    }
+
+    #[test]
+    fn settings_sections() {
+        let mut wifi: HashMap<String, glib::Variant> = HashMap::new();
+        wifi.insert("ssid".into(), b"Home".to_vec().to_variant());
+        let mut all: HashMap<String, HashMap<String, glib::Variant>> = HashMap::new();
+        all.insert("802-11-wireless".into(), wifi);
+        let v = all.to_variant();
+        let w = settings_section(&v, "802-11-wireless").unwrap();
+        assert_eq!(w.bytes("ssid"), b"Home");
+        assert!(settings_section(&v, "ipv4").is_none());
+        // The wrong type gives an empty dictionary instead of a panic.
+        assert_eq!(Dict::from(&v).str("anything"), "");
     }
 
     #[test]

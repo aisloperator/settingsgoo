@@ -140,9 +140,10 @@ fn forget(widget: &gtk::Button, net: Network) {
     let widget = widget.clone();
     glib::spawn_future_local(async move {
         if dialog.choose_future(parent.as_ref()).await == Ok(1)
-            && let Err(e) = nm::forget(&conn).await {
-                sys::show_error(&widget, "Could not forget the network", &e);
-            }
+            && let Err(e) = nm::forget(&conn).await
+        {
+            sys::show_error(&widget, "Could not forget the network", &e);
+        }
     });
 }
 
