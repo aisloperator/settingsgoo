@@ -370,8 +370,8 @@ pub struct Network {
     pub ssid: String,
     /// Access point object path (the strongest one for this SSID).
     pub ap: String,
-    /// Signal strength, 0–4 bars.
-    pub bars: u8,
+    /// Signal strength in percent.
+    pub strength: u8,
     pub security: Security,
     /// Saved connection object path, if this network is known.
     pub saved: Option<String>,
@@ -382,6 +382,42 @@ pub struct Network {
 pub struct WifiDevice {
     pub device: Device,
     pub networks: Vec<Network>,
+    /// When the last scan finished (CLOCK_BOOTTIME milliseconds), or -1 if never.
+    pub last_scan: i64,
+}
+
+impl Network {
+    /// Signal strength as 1–4 bars, for the icon.
+    pub fn bars(&self) -> u8 {
+        match self.strength {
+            0..=20 => 1,
+            21..=40 => 2,
+            41..=60 => 3,
+            _ => 4,
+        }
+    }
+}
+
+/// Keeps one entry per network name (the connected access point, otherwise
+/// the strongest) and sorts: connected first, then strongest signal, then name.
+fn pick_networks(access_points: Vec<Network>) -> Vec<Network> {
+    let mut best: HashMap<String, Network> = HashMap::new();
+    for net in access_points {
+        match best.get(&net.ssid) {
+            Some(b) if b.active || (b.strength >= net.strength && !net.active) => {}
+            _ => {
+                best.insert(net.ssid.clone(), net);
+            }
+        }
+    }
+    let mut networks: Vec<Network> = best.into_values().collect();
+    networks.sort_by(|a, b| {
+        b.active
+            .cmp(&a.active)
+            .then(b.strength.cmp(&a.strength))
+            .then(a.ssid.to_lowercase().cmp(&b.ssid.to_lowercase()))
+    });
+    networks
 }
 
 /// Saved Wi-Fi connections: SSID → connection object path.
@@ -434,7 +470,12 @@ pub fn wifi_devices() -> Vec<WifiDevice> {
                 .as_ref()
                 .map(|w| w.str("ActiveAccessPoint"))
                 .unwrap_or_default();
-            let mut best: HashMap<String, (u8, Network)> = HashMap::new();
+            let last_scan = w
+                .as_ref()
+                .and_then(|w| w.value("LastScan"))
+                .and_then(|v| v.get::<i64>())
+                .unwrap_or(-1);
+            let mut access_points = vec![];
             for ap in w.map(|w| w.paths("AccessPoints")).unwrap_or_default() {
                 let Some(p) = props(&ap, "org.freedesktop.NetworkManager.AccessPoint") else {
                     continue;
@@ -443,40 +484,24 @@ pub fn wifi_devices() -> Vec<WifiDevice> {
                 if ssid.is_empty() {
                     continue; // hidden network
                 }
-                let strength = p.value("Strength").and_then(|v| v.get::<u8>()).unwrap_or(0);
-                let active = ap == active_ap;
-                let net = Network {
-                    bars: match strength {
-                        0..=20 => 1,
-                        21..=40 => 2,
-                        41..=60 => 3,
-                        _ => 4,
-                    },
+                access_points.push(Network {
+                    strength: p.value("Strength").and_then(|v| v.get::<u8>()).unwrap_or(0),
                     security: Security::from_flags(
                         p.u32("Flags"),
                         p.u32("WpaFlags"),
                         p.u32("RsnFlags"),
                     ),
                     saved: saved.get(&ssid).cloned(),
-                    active,
-                    ssid: ssid.clone(),
+                    active: ap == active_ap,
+                    ssid,
                     ap,
-                };
-                match best.get(&ssid) {
-                    Some((s, n)) if n.active || (*s >= strength && !active) => {}
-                    _ => {
-                        best.insert(ssid, (strength, net));
-                    }
-                }
+                });
             }
-            let mut networks: Vec<Network> = best.into_values().map(|(_, n)| n).collect();
-            networks.sort_by(|a, b| {
-                b.active
-                    .cmp(&a.active)
-                    .then(b.bars.cmp(&a.bars))
-                    .then(a.ssid.to_lowercase().cmp(&b.ssid.to_lowercase()))
-            });
-            WifiDevice { device, networks }
+            WifiDevice {
+                device,
+                networks: pick_networks(access_points),
+                last_scan,
+            }
         })
         .collect()
 }
@@ -608,6 +633,41 @@ mod tests {
         assert!(settings_section(&v, "ipv4").is_none());
         // The wrong type gives an empty dictionary instead of a panic.
         assert_eq!(Dict::from(&v).str("anything"), "");
+    }
+
+    fn ap(ssid: &str, strength: u8, active: bool) -> Network {
+        Network {
+            ssid: ssid.into(),
+            ap: format!("/ap/{ssid}/{strength}"),
+            strength,
+            security: Security::Psk,
+            saved: None,
+            active,
+        }
+    }
+
+    #[test]
+    fn networks_sorted_connected_then_strongest() {
+        let nets = pick_networks(vec![
+            ap("weak", 20, false),
+            ap("strong", 90, false),
+            ap("home", 40, true),
+            ap("strong", 50, false), // second, weaker AP of the same network
+            ap("mid", 60, false),
+        ]);
+        let order: Vec<(&str, u8)> = nets.iter().map(|n| (n.ssid.as_str(), n.strength)).collect();
+        assert_eq!(
+            order,
+            [("home", 40), ("strong", 90), ("mid", 60), ("weak", 20)]
+        );
+    }
+
+    #[test]
+    fn connected_access_point_wins_over_stronger_one() {
+        let nets = pick_networks(vec![ap("home", 90, false), ap("home", 30, true)]);
+        assert_eq!(nets.len(), 1);
+        assert!(nets[0].active);
+        assert_eq!(nets[0].strength, 30);
     }
 
     #[test]

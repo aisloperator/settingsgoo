@@ -1,8 +1,9 @@
 //! Wi-Fi: turn the radio on and off, see nearby networks, connect,
 //! disconnect and forget networks, via NetworkManager.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use gtk::glib;
 use gtk::prelude::*;
@@ -150,11 +151,12 @@ fn forget(widget: &gtk::Button, net: Network) {
 fn network_row(list: &gtk::ListBox, dev: &str, net: &Network) {
     let mut subtitle = vec![];
     if net.active {
-        subtitle.push("Connected");
+        subtitle.push("Connected".to_string());
     } else if net.saved.is_some() {
-        subtitle.push("Saved");
+        subtitle.push("Saved".to_string());
     }
-    subtitle.push(net.security.name());
+    subtitle.push(format!("Signal {}%", net.strength));
+    subtitle.push(net.security.name().to_string());
     let subtitle = subtitle.join(" · ");
 
     let buttons = gtk::Box::builder().spacing(6).build();
@@ -190,75 +192,186 @@ fn network_row(list: &gtk::ListBox, dev: &str, net: &Network) {
     }
     sys::row_with_icon(
         list,
-        Some(signal_icon(net.bars)),
+        Some(signal_icon(net.bars())),
         &net.ssid,
         Some(&subtitle),
         &buttons,
     );
 }
 
-fn render(container: &gtk::Box, devices: &[WifiDevice], enabled: bool) {
-    sys::clear(container);
-    if devices.is_empty() {
-        container.append(&sys::dim_label("No Wi-Fi adapter was found."));
-        return;
-    }
-    if !enabled {
-        container.append(&sys::dim_label("Wi-Fi is turned off."));
-        return;
-    }
-    for wd in devices {
-        let dev = &wd.device;
-        let suffix = if devices.len() > 1 {
-            format!(" ({})", dev.interface)
-        } else {
-            String::new()
-        };
+/// How often to ask for a new scan while the page is showing. GNOME's Wi-Fi
+/// panel does much the same; NetworkManager itself scans rarely while
+/// connected, so without this the list would go stale.
+const SCAN_INTERVAL: Duration = Duration::from_secs(20);
+/// Stop showing "Searching…" after this long even if no result arrived.
+const SCAN_TIMEOUT: Duration = Duration::from_secs(15);
 
-        if dev.is_connected() {
-            let list = sys::group(container, &format!("Connection{suffix}"));
-            let status = format!(
-                "Connected to {}",
-                dev.connection.as_deref().unwrap_or("a network")
-            );
-            sys::row(
-                &list,
-                "Status",
-                Some(&status),
-                &gtk::Box::new(gtk::Orientation::Horizontal, 0),
-            );
-            crate::pages::network::detail_rows(&list, dev);
+/// What the page shows; it is rebuilt only when this changes.
+#[derive(PartialEq)]
+struct State {
+    enabled: bool,
+    devices: Vec<WifiDevice>,
+    searching: bool,
+}
+
+struct WifiPage {
+    radio_list: gtk::ListBox,
+    toggle: Toggle,
+    container: gtk::Box,
+    shown: RefCell<Option<State>>,
+    devices: RefCell<Vec<WifiDevice>>,
+    /// Set while a scan we asked for is running.
+    searching: Cell<bool>,
+    /// The newest `last_scan` when the current search started.
+    scan_mark: Cell<i64>,
+    timer: RefCell<Option<glib::SourceId>>,
+}
+
+impl WifiPage {
+    fn refresh(self: &Rc<Self>) {
+        let radio = nm::wifi_radio();
+        self.toggle.set(radio.enabled);
+        self.toggle.switch.set_sensitive(radio.hardware_enabled);
+        let devices = nm::wifi_devices();
+        // The on/off switch means nothing without an adapter.
+        if let Some(frame) = self.radio_list.parent() {
+            frame.set_visible(!devices.is_empty());
         }
+        // A newer scan result means the search we started has finished.
+        if self.searching.get() && devices.iter().any(|d| d.last_scan > self.scan_mark.get()) {
+            self.searching.set(false);
+        }
+        let state = State {
+            enabled: radio.enabled,
+            devices: devices.clone(),
+            searching: self.searching.get(),
+        };
+        *self.devices.borrow_mut() = devices;
+        if self.shown.borrow().as_ref() != Some(&state) {
+            self.render(&state);
+            *self.shown.borrow_mut() = Some(state);
+        }
+    }
 
-        let list = sys::group(container, &format!("Visible networks{suffix}"));
-        let scan = gtk::Button::with_label("Search Again");
-        let path = dev.path.clone();
-        scan.connect_clicked(move |_| {
-            let path = path.clone();
+    /// Asks every Wi-Fi adapter to look for networks.
+    fn scan(self: &Rc<Self>) {
+        let devices = self.devices.borrow().clone();
+        if devices.is_empty() || !nm::wifi_radio().enabled || self.searching.get() {
+            return;
+        }
+        self.scan_mark
+            .set(devices.iter().map(|d| d.last_scan).max().unwrap_or(-1));
+        self.searching.set(true);
+        self.refresh();
+        for d in devices {
             glib::spawn_future_local(async move {
                 // NetworkManager refuses scans that come too soon after the
                 // previous one; that is harmless, so don't bother the user.
-                if let Err(e) = nm::request_scan(&path).await {
+                if let Err(e) = nm::request_scan(&d.device.path).await {
                     eprintln!("settingsgoo: Wi-Fi scan: {e}");
                 }
             });
-        });
-        let status = if dev.is_connected() {
-            "Searching automatically"
-        } else {
-            dev.state_name()
-        };
-        sys::row(&list, "Status", Some(status), &scan);
-        if wd.networks.is_empty() {
-            sys::row(
-                &list,
-                "No networks found",
-                None,
-                &gtk::Box::new(gtk::Orientation::Horizontal, 0),
-            );
         }
-        for net in &wd.networks {
-            network_row(&list, &dev.path, net);
+        let this = Rc::downgrade(self);
+        glib::timeout_add_local_once(SCAN_TIMEOUT, move || {
+            if let Some(this) = this.upgrade() {
+                this.searching.set(false);
+                this.refresh();
+            }
+        });
+    }
+
+    /// Scans now and then regularly while the page is visible.
+    fn start_scanning(self: &Rc<Self>) {
+        self.scan();
+        let this = Rc::downgrade(self);
+        let id = glib::timeout_add_local(SCAN_INTERVAL, move || {
+            let Some(this) = this.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            this.scan();
+            glib::ControlFlow::Continue
+        });
+        if let Some(old) = self.timer.replace(Some(id)) {
+            old.remove();
+        }
+    }
+
+    fn stop_scanning(&self) {
+        if let Some(id) = self.timer.take() {
+            id.remove();
+        }
+    }
+
+    fn render(self: &Rc<Self>, state: &State) {
+        let container = &self.container;
+        sys::clear(container);
+        if state.devices.is_empty() {
+            container.append(&sys::dim_label("No Wi-Fi adapter was found."));
+            return;
+        }
+        if !state.enabled {
+            container.append(&sys::dim_label("Wi-Fi is turned off."));
+            return;
+        }
+        for wd in &state.devices {
+            let dev = &wd.device;
+            let suffix = if state.devices.len() > 1 {
+                format!(" ({})", dev.interface)
+            } else {
+                String::new()
+            };
+
+            if dev.is_connected() {
+                let list = sys::group(container, &format!("Connection{suffix}"));
+                let status = format!(
+                    "Connected to {}",
+                    dev.connection.as_deref().unwrap_or("a network")
+                );
+                sys::row(
+                    &list,
+                    "Status",
+                    Some(&status),
+                    &gtk::Box::new(gtk::Orientation::Horizontal, 0),
+                );
+                crate::pages::network::detail_rows(&list, dev);
+            }
+
+            let list = sys::group(container, &format!("Visible networks{suffix}"));
+            let controls = gtk::Box::builder().spacing(12).build();
+            let spinner = gtk::Spinner::new();
+            spinner.set_spinning(state.searching);
+            controls.append(&spinner);
+            let scan = gtk::Button::with_label("Search Again");
+            scan.set_sensitive(!state.searching);
+            let this = Rc::downgrade(self);
+            scan.connect_clicked(move |_| {
+                if let Some(this) = this.upgrade() {
+                    this.scan();
+                }
+            });
+            controls.append(&scan);
+            let (title, subtitle) = if state.searching {
+                ("Searching…", "Looking for nearby networks")
+            } else {
+                (
+                    "Nearby networks",
+                    "Updated automatically while this page is open",
+                )
+            };
+            sys::row(&list, title, Some(subtitle), &controls);
+
+            if wd.networks.is_empty() {
+                sys::row(
+                    &list,
+                    "No networks found",
+                    None,
+                    &gtk::Box::new(gtk::Orientation::Horizontal, 0),
+                );
+            }
+            for net in &wd.networks {
+                network_row(&list, &dev.path, net);
+            }
         }
     }
 }
@@ -270,7 +383,7 @@ pub fn build() -> gtk::Widget {
         return page.upcast();
     }
 
-    let list = sys::group(&page, "");
+    let radio_list = sys::group(&page, "");
     let radio = nm::wifi_radio();
     let toggle = Toggle::new(radio.enabled);
     toggle.on_change(nm::set_wifi_enabled);
@@ -280,32 +393,31 @@ pub fn build() -> gtk::Widget {
         "Turned off by a hardware switch"
     };
     toggle.switch.set_sensitive(radio.hardware_enabled);
-    sys::row(&list, "Wi-Fi", Some(subtitle), &toggle.switch);
+    sys::row(&radio_list, "Wi-Fi", Some(subtitle), &toggle.switch);
 
     let container = gtk::Box::new(gtk::Orientation::Vertical, 12);
     page.append(&container);
 
-    type State = Option<(bool, Vec<WifiDevice>)>;
-    let shown: Rc<RefCell<State>> = Rc::default();
-    let refresh = move || {
-        let radio = nm::wifi_radio();
-        toggle.set(radio.enabled);
-        toggle.switch.set_sensitive(radio.hardware_enabled);
-        let devices = nm::wifi_devices();
-        // The on/off switch means nothing without an adapter.
-        if let Some(frame) = list.parent() {
-            frame.set_visible(!devices.is_empty());
-        }
-        let state = Some((radio.enabled, devices));
-        // Rebuild only when something visible changed.
-        if *shown.borrow() != state {
-            if let Some((enabled, devices)) = &state {
-                render(&container, devices, *enabled);
-            }
-            *shown.borrow_mut() = state;
-        }
-    };
-    refresh();
-    nm::watch(refresh);
+    let this = Rc::new(WifiPage {
+        radio_list,
+        toggle,
+        container,
+        shown: RefCell::default(),
+        devices: RefCell::default(),
+        searching: Cell::new(false),
+        scan_mark: Cell::new(-1),
+        timer: RefCell::default(),
+    });
+    this.refresh();
+    {
+        let this = this.clone();
+        nm::watch(move || this.refresh());
+    }
+    // A page that isn't showing is unmapped, so scan only while it's visible.
+    {
+        let this = this.clone();
+        page.connect_map(move |_| this.start_scanning());
+    }
+    page.connect_unmap(move |_| this.stop_scanning());
     page.upcast()
 }
