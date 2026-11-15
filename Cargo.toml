@@ -1,0 +1,11 @@
+[package]
+name = "settingsgoo"
+version = "0.1.0"
+edition = "2024"
+description = "Desktop-environment-neutral settings app for Linux (X11 and Wayland)"
+authors = ["AI Sloperator with Claude Code"]
+homepage = "https://www.aisloperator.com/"
+publish = false
+
+[dependencies]
+gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
