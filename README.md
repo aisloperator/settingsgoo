@@ -18,7 +18,7 @@ First version. Written in Rust with GTK 4. The only crate dependency is `gtk4` (
 | Displays | Lists connected monitors: connector, model, resolution, scale, position, refresh rate, physical size (read-only) | GDK |
 | Sound | Default output and input device, volume, mute | `pactl` (works with PulseAudio and with PipeWire through pipewire-pulse) |
 | Region & Keyboard | System language (`LANG`); primary XKB keyboard layout and variant | systemd-localed (`org.freedesktop.locale1`) over D-Bus |
-| Date & Time | Time zone, automatic network time, hardware clock in local time | systemd-timedated (`org.freedesktop.timedate1`) over D-Bus |
+| Date & Time | Time zone, automatic network time | systemd-timedated (`org.freedesktop.timedate1`) over D-Bus |
 | About | Device name and hostname (editable); OS, kernel, hardware, CPU, memory, desktop, windowing system | systemd-hostnamed (`org.freedesktop.hostname1`), `/proc`, `/etc/os-release` |
 
 System-wide changes (time zone, language, keyboard, hostname) go through polkit, so you may be asked for an administrator password. That needs a polkit authentication agent running in the session.

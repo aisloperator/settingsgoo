@@ -38,7 +38,7 @@ pub fn build() -> gtk::Widget {
             let tz = glib::TimeZone::new(Some(zone.borrow().as_str()));
             if let Some(text) = glib::DateTime::now(&tz)
                 .ok()
-                .and_then(|t| t.format("%c %Z").ok())
+                .and_then(|t| t.format("%a %-d %b %Y, %X %Z").ok())
             {
                 now.set_label(&text);
             }
@@ -94,25 +94,6 @@ pub fn build() -> gtk::Widget {
         "Set the time from the network. The clock is not currently synchronized."
     };
     sys::row(&list, "Automatic time", Some(synced), &ntp.switch);
-
-    let list = sys::group(&page, "Hardware clock");
-    let rtc = Toggle::new(sys::prop_bool(&proxy, "LocalRTC").unwrap_or(false));
-    rtc.on_change(move |local| {
-        let proxy = proxy.clone();
-        async move {
-            sys::call(&proxy, "SetLocalRTC", (local, false, true).to_variant())
-                .await
-                .map(drop)
-        }
-    });
-    sys::row(
-        &list,
-        "Hardware clock uses local time",
-        Some(
-            "Usually off. Turn on only when sharing the computer with an operating system that expects local time.",
-        ),
-        &rtc.switch,
-    );
 
     page.upcast()
 }
