@@ -22,9 +22,12 @@ First version. Written in Rust with GTK 4. The only crate dependency is `gtk4` (
 | Sound | Default output and input device, volume, mute | `pactl` (works with PulseAudio and with PipeWire through pipewire-pulse) |
 | Region & Keyboard | System language (`LANG`); primary XKB keyboard layout and variant | systemd-localed (`org.freedesktop.locale1`) over D-Bus |
 | Date & Time | Time zone, automatic network time | systemd-timedated (`org.freedesktop.timedate1`) over D-Bus |
+| Users | Your own account: picture, full name, username, account type (standard or administrator), password, login shell, home folder; automatic login; group memberships (add and remove, with a note when a change won't take effect until you log in again) | AccountsService (`org.freedesktop.Accounts`) over D-Bus; `gpasswd` through `pkexec` for groups; for automatic login, AccountsService with GDM or a drop-in file in `/etc/lightdm/lightdm.conf.d` with LightDM |
 | About | Device name and hostname (editable); OS, kernel, hardware, CPU, memory, desktop, windowing system | systemd-hostnamed (`org.freedesktop.hostname1`), `/proc`, `/etc/os-release` |
 
-System-wide changes (time zone, language, keyboard, hostname) go through polkit, so you may be asked for an administrator password. That needs a polkit authentication agent running in the session.
+System-wide changes (time zone, language, keyboard, hostname, and most account changes on the Users page) go through polkit, so you may be asked for an administrator password. That needs a polkit authentication agent running in the session.
+
+On the Users page, the new password is hashed in the app with the system's own method (libcrypt) and handed to AccountsService; it is never shown or stored anywhere else. Group changes run `gpasswd` through `pkexec`. Leaving an administrator group (`sudo`, `wheel` or `admin`) or making yourself a standard user asks for confirmation first. Automatic login works with GDM and LightDM; other display managers are shown as not supported yet.
 
 If a service or tool is missing, its page says so instead of failing.
 
@@ -32,7 +35,7 @@ On the Bluetooth page, the app registers itself with BlueZ as the pairing agent 
 
 ### Not included (yet)
 
-Wi-Fi networks using enterprise (802.1X) or WEP security, hidden networks, and editing connection settings (such as static IP addresses) are not supported yet. Bluetooth file transfer, renaming or blocking devices, and choosing audio profiles (such as high-quality playback or headset mode) are not included yet.
+Wi-Fi networks using enterprise (802.1X) or WEP security, hidden networks, and editing connection settings (such as static IP addresses) are not supported yet. Creating, deleting or switching between user accounts, and changing other users' accounts, are not included yet. Bluetooth file transfer, renaming or blocking devices, and choosing audio profiles (such as high-quality playback or headset mode) are not included yet.
 
 Settings with no standard interface shared by X11 and the various Wayland compositors are left out for now. These include monitor arrangement and resolution, pointer and touchpad settings, keyboard repeat rate, and per-session keyboard layouts. They can be added once the window manager or compositor is chosen.
 
@@ -50,7 +53,7 @@ cargo build --release
 ./target/release/settingsgoo
 ```
 
-Runtime tools used if present: `pactl` (Sound page) and `locale` (list of installed locales).
+Runtime tools used if present: `pactl` (Sound page), `locale` (list of installed locales), and `pkexec`, `gpasswd` and `getent` (Users page). The app links to libcrypt (`libcrypt.so.1`, part of every Linux system) for password hashing.
 
 ## Code layout
 

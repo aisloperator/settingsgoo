@@ -8,6 +8,7 @@ mod displays;
 pub mod network;
 mod region;
 mod sound;
+mod users;
 mod wifi;
 
 pub struct Page {
@@ -57,6 +58,11 @@ pub fn all() -> Vec<Page> {
             id: "datetime",
             title: "Date & Time",
             widget: datetime::build(),
+        },
+        Page {
+            id: "users",
+            title: "Users",
+            widget: users::build(),
         },
         Page {
             id: "about",

@@ -179,6 +179,53 @@ pub fn run(program: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// Runs a program without blocking the user interface and returns its stdout.
+pub async fn run_async(argv: &[&str]) -> Result<String, String> {
+    let program = argv.first().copied().unwrap_or_default();
+    let os: Vec<&std::ffi::OsStr> = argv.iter().map(std::ffi::OsStr::new).collect();
+    let proc = gio::Subprocess::newv(
+        &os,
+        gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_PIPE,
+    )
+    .map_err(|e| format!("{program}: {e}"))?;
+    let (out, err) = proc
+        .communicate_utf8_future(None)
+        .await
+        .map_err(|e| format!("{program}: {e}"))?;
+    if proc.is_successful() {
+        return Ok(out.map(String::from).unwrap_or_default());
+    }
+    let err = err.map(|e| e.trim().to_string()).unwrap_or_default();
+    Err(if !err.is_empty() {
+        err
+    } else {
+        format!("{program} failed (exit status {})", proc.exit_status())
+    })
+}
+
+/// Runs a program as root through `pkexec`, which asks for an administrator
+/// password (through the session's polkit authentication agent) if needed.
+pub async fn run_as_admin(argv: &[&str]) -> Result<String, String> {
+    if !have_program("pkexec") {
+        return Err("pkexec (part of polkit) is not installed.".into());
+    }
+    let mut full = vec!["pkexec"];
+    full.extend_from_slice(argv);
+    run_async(&full).await.map_err(|e| {
+        // pkexec exits with 126 if the password dialog was dismissed and 127
+        // if authorization failed, sometimes with nothing on stderr.
+        if e.contains("exit status 126") || e.contains("dismissed") {
+            "Authorization was cancelled.".into()
+        } else if e.contains("exit status 127") || e.contains("Not authorized") {
+            "Not authorized. This needs an administrator password, and a polkit \
+             authentication agent running in the session."
+                .into()
+        } else {
+            e
+        }
+    })
+}
+
 pub fn have_program(name: &str) -> bool {
     glib::find_program_in_path(name).is_some()
 }
@@ -314,6 +361,25 @@ pub fn value_label(text: &str) -> gtk::Label {
         .build()
 }
 
+/// Asks the user to confirm an action. Returns true if they chose `action`.
+pub async fn confirm(
+    widget: &impl IsA<gtk::Widget>,
+    message: &str,
+    detail: &str,
+    action: &str,
+) -> bool {
+    let parent = widget.root().and_downcast::<gtk::Window>();
+    let dialog = gtk::AlertDialog::builder()
+        .modal(true)
+        .message(message)
+        .detail(detail)
+        .buttons(["Cancel", action])
+        .cancel_button(0)
+        .default_button(0)
+        .build();
+    dialog.choose_future(parent.as_ref()).await == Ok(1)
+}
+
 pub fn show_error(widget: &impl IsA<gtk::Widget>, message: &str, detail: &str) {
     let parent = widget.root().and_downcast::<gtk::Window>();
     gtk::AlertDialog::builder()
@@ -397,7 +463,8 @@ impl Choice {
     }
 
     /// Runs `apply(new_value)` when the user picks another item. If it fails,
-    /// the previous item is selected again and the error is shown.
+    /// the previous item is selected again and the error is shown (an empty
+    /// error means the user cancelled, so nothing is shown).
     pub fn on_change<F, Fut>(&self, apply: F)
     where
         F: Fn(String) -> Fut + 'static,
@@ -421,7 +488,9 @@ impl Choice {
             glib::spawn_future_local(async move {
                 if let Err(e) = apply(new).await {
                     this.select(&old);
-                    show_error(&this.dropdown, "Could not change the setting", &e);
+                    if !e.is_empty() {
+                        show_error(&this.dropdown, "Could not change the setting", &e);
+                    }
                 }
             });
         });
