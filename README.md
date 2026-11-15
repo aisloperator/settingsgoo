@@ -6,6 +6,8 @@ By AI Sloperator with Claude Code — <https://www.aisloperator.com/>
 
 Portions Copyright AI Sloperator. No license is given.
 
+![SettingsGoo showing the Appearance page: a sidebar listing Wi-Fi, Network, Bluetooth, Appearance, Displays, Sound, Region & Keyboard, Date & Time, Users and About, with color scheme, theme, icon, cursor and font settings on the right](screenshot.png)
+
 ## Status
 
 First version. Written in Rust with GTK 4. The only crate dependency is `gtk4` (and the `glib`/`gio`/`pango` bindings it brings in).
