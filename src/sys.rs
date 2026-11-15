@@ -399,6 +399,9 @@ pub struct Choice {
     values: Rc<RefCell<Vec<String>>>,
     current: Rc<RefCell<String>>,
     quiet: Rc<Cell<bool>>,
+    /// Labels of items that are shown grayed out and can't be chosen, with
+    /// the reason (shown as a tooltip).
+    disabled: Rc<RefCell<std::collections::HashMap<String, String>>>,
 }
 
 /// Turns a list of strings into (value, label) pairs with identical parts.
@@ -419,9 +422,101 @@ impl Choice {
             values: Rc::default(),
             current: Rc::default(),
             quiet: Rc::default(),
+            disabled: Rc::default(),
         };
-        choice.set_items(items, selected);
         choice
+            .dropdown
+            .set_list_factory(Some(&choice.list_factory()));
+        always_show_scrollbars(&choice.dropdown);
+        choice.set_items(items, selected);
+        // A disabled item can't be clicked, but could still be reached by
+        // typing in the search box; go back to the previous item then.
+        let this = choice.clone();
+        choice.dropdown.connect_selected_notify(move |_| {
+            if !this.quiet.get() && this.selected_is_disabled() {
+                this.select(&this.value());
+            }
+        });
+        choice
+    }
+
+    /// The rows of the pop-up list: a check mark on the selected item, and
+    /// the label, grayed out if disabled.
+    fn list_factory(&self) -> gtk::SignalListItemFactory {
+        let factory = gtk::SignalListItemFactory::new();
+        let dropdown = self.dropdown.downgrade();
+        // Shows the check mark if the row holds the drop-down's selected item.
+        let update_check = move |item: &gtk::ListItem| {
+            let check = item.child().and_then(|c| c.first_child());
+            if let (Some(dd), Some(check)) = (dropdown.upgrade(), check) {
+                let on = item.item().is_some() && item.item() == dd.selected_item();
+                check.set_opacity(if on { 1.0 } else { 0.0 });
+            }
+        };
+        let dropdown = self.dropdown.downgrade();
+        let update = update_check.clone();
+        factory.connect_setup(move |_, item| {
+            let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+            let hbox = gtk::Box::builder().spacing(6).build();
+            // The check mark goes first: at the end of the row it could be
+            // hidden under the scrollbar.
+            hbox.append(&gtk::Image::from_icon_name("object-select-symbolic"));
+            hbox.append(&gtk::Label::builder().xalign(0.0).hexpand(true).build());
+            item.set_child(Some(&hbox));
+            if let Some(dd) = dropdown.upgrade() {
+                let (item, update) = (item.downgrade(), update.clone());
+                dd.connect_selected_item_notify(move |_| {
+                    if let Some(item) = item.upgrade() {
+                        update(&item);
+                    }
+                });
+            }
+        });
+        let disabled = self.disabled.clone();
+        factory.connect_bind(move |_, item| {
+            let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+            let (Some(text), Some(label)) = (
+                item.item().and_downcast::<gtk::StringObject>(),
+                item.child()
+                    .and_then(|c| c.last_child())
+                    .and_downcast::<gtk::Label>(),
+            ) else {
+                return;
+            };
+            let text = text.string();
+            let reason = disabled.borrow().get(text.as_str()).cloned();
+            label.set_label(&text);
+            label.set_sensitive(reason.is_none());
+            label.set_tooltip_text(reason.as_deref());
+            item.set_selectable(reason.is_none());
+            item.set_activatable(reason.is_none());
+            update_check(item);
+        });
+        factory
+    }
+
+    /// Grays out the items with these values; each maps to the reason why it
+    /// can't be chosen. Call after `set_items`.
+    pub fn set_disabled(&self, reasons: &std::collections::HashMap<String, String>) {
+        let labels = self.dropdown.model().and_downcast::<gtk::StringList>();
+        let values = self.values.borrow();
+        let mut disabled = self.disabled.borrow_mut();
+        disabled.clear();
+        for (i, value) in values.iter().enumerate() {
+            if let (Some(reason), Some(label)) = (
+                reasons.get(value),
+                labels.as_ref().and_then(|l| l.string(i as u32)),
+            ) {
+                disabled.insert(label.to_string(), reason.clone());
+            }
+        }
+    }
+
+    fn selected_is_disabled(&self) -> bool {
+        self.dropdown
+            .selected_item()
+            .and_downcast::<gtk::StringObject>()
+            .is_some_and(|s| self.disabled.borrow().contains_key(s.string().as_str()))
     }
 
     /// Replaces the items without triggering the change handler. If `selected`
@@ -439,6 +534,7 @@ impl Choice {
         let labels: Vec<&str> = items.iter().map(|(_, l)| l.as_str()).collect();
         // Searching is only worth it for long lists such as time zones.
         self.dropdown.set_enable_search(items.len() > 15);
+        self.disabled.borrow_mut().clear();
         self.quiet.set(true);
         self.dropdown
             .set_model(Some(&gtk::StringList::new(&labels)));
@@ -473,7 +569,7 @@ impl Choice {
         let this = self.clone();
         let apply = Rc::new(apply);
         self.dropdown.connect_selected_notify(move |dd| {
-            if this.quiet.get() {
+            if this.quiet.get() || this.selected_is_disabled() {
                 return;
             }
             let Some(new) = this.values.borrow().get(dd.selected() as usize).cloned() else {
@@ -494,6 +590,20 @@ impl Choice {
                 }
             });
         });
+    }
+}
+
+/// Makes the scrollbars in a drop-down's pop-up list always visible when the
+/// list is longer than the pop-up, instead of appearing only while the pointer
+/// moves over it, so it's clear there are more items.
+fn always_show_scrollbars(widget: &impl IsA<gtk::Widget>) {
+    let mut child = widget.as_ref().first_child();
+    while let Some(c) = child {
+        if let Some(sw) = c.downcast_ref::<gtk::ScrolledWindow>() {
+            sw.set_overlay_scrolling(false);
+        }
+        always_show_scrollbars(&c);
+        child = c.next_sibling();
     }
 }
 

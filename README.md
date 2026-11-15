@@ -22,7 +22,7 @@ First version. Written in Rust with GTK 4. The only crate dependency is `gtk4` (
 | Sound | Default output and input device, volume, mute | `pactl` (works with PulseAudio and with PipeWire through pipewire-pulse) |
 | Region & Keyboard | System language (`LANG`); primary XKB keyboard layout and variant | systemd-localed (`org.freedesktop.locale1`) over D-Bus |
 | Date & Time | Time zone, automatic network time | systemd-timedated (`org.freedesktop.timedate1`) over D-Bus |
-| Users | Your own account: picture, full name, username, account type (standard or administrator), password, login shell, home folder; automatic login; group memberships (add and remove, with a note when a change won't take effect until you log in again) | AccountsService (`org.freedesktop.Accounts`) over D-Bus; `gpasswd` through `pkexec` for groups; for automatic login, AccountsService with GDM or a drop-in file in `/etc/lightdm/lightdm.conf.d` with LightDM |
+| Users | Your own account: picture, full name, username, account type (standard or administrator), password, login shell, home folder; automatic login; group memberships (add and remove, with a note when a change won't take effect until you log in again; groups meant only for the system, for services or for other users' personal use are grayed out with the reason in a tooltip) | AccountsService (`org.freedesktop.Accounts`) over D-Bus; `gpasswd` through `pkexec` for groups; for automatic login, AccountsService with GDM or a drop-in file in `/etc/lightdm/lightdm.conf.d` with LightDM |
 | About | Device name and hostname (editable); OS, kernel, hardware, CPU, memory, desktop, windowing system | systemd-hostnamed (`org.freedesktop.hostname1`), `/proc`, `/etc/os-release` |
 
 System-wide changes (time zone, language, keyboard, hostname, and most account changes on the Users page) go through polkit, so you may be asked for an administrator password. That needs a polkit authentication agent running in the session.
@@ -58,7 +58,7 @@ Runtime tools used if present: `pactl` (Sound page), `locale` (list of installed
 ## Code layout
 
 - `src/main.rs` — application, window, sidebar
-- `src/sys.rs` — D-Bus and command helpers (including `Dict`, for reading `a{sv}` dictionaries safely), row/group layout helpers, `Choice` (a drop-down) and `Toggle` (a switch). Both undo the change and show an error if applying it fails.
+- `src/sys.rs` — D-Bus and command helpers (including `Dict`, for reading `a{sv}` dictionaries safely), row/group layout helpers, `Choice` (a drop-down, whose pop-up list always shows its scrollbar and can gray out items) and `Toggle` (a switch). Both undo the change and show an error if applying it fails.
 - `src/nm.rs` — a small NetworkManager D-Bus client
 - `src/bluez.rs` — a small BlueZ D-Bus client and pairing agent
 - `src/pages/*.rs` — one module per page

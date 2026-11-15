@@ -6,6 +6,7 @@
 //! `gpasswd` run through `pkexec`. Automatic login is set through
 //! AccountsService for GDM, and with a LightDM configuration file for LightDM.
 
+use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_ulong, c_void};
 use std::os::unix::fs::MetadataExt;
 use std::rc::Rc;
@@ -140,6 +141,115 @@ fn primary_gid(user: &str) -> Option<u32> {
             .map(String::from)
     })?;
     line.trim().split(':').nth(3)?.parse().ok()
+}
+
+/// An entry of the password database: (name, user ID, primary group ID).
+type Account = (String, u32, u32);
+
+/// Parses `/etc/passwd` lines (`name:password:uid:gid:...`).
+fn parse_accounts(text: &str) -> Vec<Account> {
+    text.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            Some((
+                f.first()?.to_string(),
+                f.get(2)?.parse().ok()?,
+                f.get(3)?.parse().ok()?,
+            ))
+        })
+        .collect()
+}
+
+fn all_accounts() -> Vec<Account> {
+    let text = sys::run("getent", &["passwd"])
+        .or_else(|_| std::fs::read_to_string("/etc/passwd").map_err(|e| e.to_string()))
+        .unwrap_or_default();
+    parse_accounts(&text)
+}
+
+/// The lowest user ID of ordinary (not system) accounts, from
+/// `/etc/login.defs`, normally 1000.
+fn first_user_uid() -> u32 {
+    std::fs::read_to_string("/etc/login.defs")
+        .ok()
+        .and_then(|t| {
+            t.lines().find_map(|l| {
+                let mut f = l.split_whitespace();
+                (f.next() == Some("UID_MIN")).then(|| f.next()?.parse().ok())?
+            })
+        })
+        .unwrap_or(1000)
+}
+
+/// Groups that only the system itself should use, because they give
+/// low-level access (equivalent to administrator rights, or more) or belong
+/// to a service.
+const SYSTEM_ONLY_GROUPS: &[&str] = &[
+    "root",
+    "bin",
+    "daemon",
+    "sys",
+    "adm",
+    "tty",
+    "disk",
+    "kmem",
+    "shadow",
+    "utmp",
+    "mail",
+    "news",
+    "man",
+    "proxy",
+    "www-data",
+    "backup",
+    "list",
+    "irc",
+    "src",
+    "gnats",
+    "operator",
+    "crontab",
+    "ssl-cert",
+    "messagebus",
+    "nogroup",
+    "nobody",
+    "systemd-network",
+    "systemd-resolve",
+    "systemd-timesync",
+    "systemd-coredump",
+];
+
+/// Groups that users are commonly added to, even on systems where a system
+/// account of the same name uses them (such as `uucp` for serial ports on Arch
+/// Linux, or `lp` for printers).
+const USER_GROUPS: &[&str] = &[
+    "adm", "audio", "video", "uucp", "lp", "games", "dialout", "input", "render", "kvm", "plugdev",
+    "users", "staff",
+];
+
+/// Why the user shouldn't be added to a group, or `None` if they may be.
+fn unsuitable_reason(
+    group: &GroupInfo,
+    user: &str,
+    accounts: &[Account],
+    first_user_uid: u32,
+) -> Option<String> {
+    let name = group.name.as_str();
+    if USER_GROUPS.contains(&name) {
+        return None;
+    }
+    if name.starts_with('_') || SYSTEM_ONLY_GROUPS.contains(&name) || group.gid == 0 {
+        return Some("For the system only".into());
+    }
+    if group.gid == 65534 {
+        return Some("Means “no group”".into());
+    }
+    let owner = accounts
+        .iter()
+        .find(|(n, _, gid)| *gid == group.gid && n != user)?;
+    Some(if owner.1 >= first_user_uid && owner.1 != 65534 {
+        format!("The personal group of user {}", owner.0)
+    } else {
+        format!("Used by the {} system service", owner.0)
+    })
 }
 
 /// The group IDs in effect for this process, which are those of the desktop
@@ -818,7 +928,12 @@ impl UsersPage {
     fn refresh_groups(self: &Rc<Self>) {
         sys::clear(&self.groups_area);
         let groups = all_groups();
-        let primary = primary_gid(&self.user);
+        let accounts = all_accounts();
+        let primary = accounts
+            .iter()
+            .find(|(n, _, _)| *n == self.user)
+            .map(|a| a.2)
+            .or_else(|| primary_gid(&self.user));
         let mine = memberships(&self.user, &groups, primary, &session_gids());
         let list = sys::group(&self.groups_area, "");
 
@@ -864,6 +979,15 @@ impl UsersPage {
         let mut items = vec![(String::new(), "Choose…".to_string())];
         items.extend(sys::same(&others));
         let choice = Choice::new(&items, "");
+        let first_uid = first_user_uid();
+        let reasons: HashMap<String, String> = groups
+            .iter()
+            .filter_map(|g| {
+                let why = unsuitable_reason(g, &self.user, &accounts, first_uid)?;
+                Some((g.name.clone(), why))
+            })
+            .collect();
+        choice.set_disabled(&reasons);
         let add = gtk::Button::with_label("Add");
         let hbox = gtk::Box::builder().spacing(6).build();
         hbox.append(&choice.dropdown);
@@ -956,6 +1080,35 @@ mod tests {
                 ("sudo".to_string(), Membership::Added),
                 ("video".to_string(), Membership::Removed),
             ]
+        );
+    }
+
+    #[test]
+    fn unsuitable_groups() {
+        let groups = parse_groups(
+            "root:x:0:\ndaemon:x:1:\nsudo:x:27:\nuucp:x:10:\n_ssh:x:101:\n\
+             lightdm:x:120:\ndocker:x:990:\nalice:x:1000:\nbob:x:1001:\nnogroup:x:65534:\n",
+        );
+        let accounts = parse_accounts(
+            "root:x:0:0::/root:/bin/sh\ndaemon:x:1:1::/:/sbin/nologin\n\
+             uucp:x:10:10::/:/sbin/nologin\nlightdm:x:110:120::/:/bin/false\n\
+             alice:x:1000:1000::/home/alice:/bin/bash\nbob:x:1001:1001::/home/bob:/bin/bash\n",
+        );
+        let ok: Vec<&str> = groups
+            .iter()
+            .filter(|g| unsuitable_reason(g, "alice", &accounts, 1000).is_none())
+            .map(|g| g.name.as_str())
+            .collect();
+        assert_eq!(ok, ["sudo", "uucp", "docker", "alice"]);
+        let bob = groups.iter().find(|g| g.name == "bob").unwrap();
+        assert_eq!(
+            unsuitable_reason(bob, "alice", &accounts, 1000).as_deref(),
+            Some("The personal group of user bob")
+        );
+        let lightdm = groups.iter().find(|g| g.name == "lightdm").unwrap();
+        assert_eq!(
+            unsuitable_reason(lightdm, "alice", &accounts, 1000).as_deref(),
+            Some("Used by the lightdm system service")
         );
     }
 
