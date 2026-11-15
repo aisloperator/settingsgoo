@@ -15,7 +15,7 @@ First version. Written in Rust with GTK 4. The only crate dependency is `gtk4` (
 | Page | What it does | How |
 | --- | --- | --- |
 | Wi-Fi | Turn Wi-Fi on/off; list nearby networks with signal strength and security; connect (asks for a password for WPA/WPA2/WPA3 networks), disconnect, forget saved networks; connection details | NetworkManager over D-Bus |
-| Network | Wired (and Bluetooth, mobile broadband, VPN-type WireGuard, bond, VLAN, team) devices: status, connect/disconnect, IP addresses, gateway, DNS, speed, hardware address | NetworkManager over D-Bus |
+| Network | Wired devices, plus Bluetooth, mobile broadband, WireGuard, bond, VLAN and team devices: status, connect/disconnect, IP addresses, gateway, DNS, speed, hardware address | NetworkManager over D-Bus |
 | Appearance | Color scheme (light/dark), GTK theme, icon theme, cursor theme and size, interface font | The `org.gnome.desktop.interface` GSettings keys, if that schema is installed (read by GTK, `xdg-desktop-portal` and others); `~/.config/gtk-3.0/settings.ini` and `~/.config/gtk-4.0/settings.ini`; `~/.icons/default/index.theme` for the XCursor fallback |
 | Displays | Lists connected monitors: connector, model, resolution, scale, position, refresh rate, physical size (read-only) | GDK |
 | Sound | Default output and input device, volume, mute | `pactl` (works with PulseAudio and with PipeWire through pipewire-pulse) |
