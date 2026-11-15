@@ -1,5 +1,6 @@
 //! SettingsGoo — a desktop-environment-neutral settings app for Linux (X11 and Wayland).
 
+mod bluez;
 mod nm;
 mod pages;
 mod sys;

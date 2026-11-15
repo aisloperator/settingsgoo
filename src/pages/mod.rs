@@ -2,6 +2,7 @@
 
 mod about;
 mod appearance;
+mod bluetooth;
 mod datetime;
 mod displays;
 pub mod network;
@@ -26,6 +27,11 @@ pub fn all() -> Vec<Page> {
             id: "network",
             title: "Network",
             widget: network::build(),
+        },
+        Page {
+            id: "bluetooth",
+            title: "Bluetooth",
+            widget: bluetooth::build(),
         },
         Page {
             id: "appearance",

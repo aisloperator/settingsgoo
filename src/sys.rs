@@ -65,6 +65,98 @@ pub async fn call(
         })
 }
 
+/// A string-keyed dictionary of D-Bus values (`a{sv}`).
+pub struct Dict(glib::VariantDict);
+
+impl Dict {
+    /// Wraps an `a{sv}` value. Anything else gives an empty dictionary, so
+    /// unexpected data from a service can't crash the app.
+    pub fn from(v: &glib::Variant) -> Self {
+        let ok = v.type_() == glib::VariantTy::VARDICT;
+        Dict(glib::VariantDict::new(ok.then_some(v)))
+    }
+    pub fn value(&self, key: &str) -> Option<glib::Variant> {
+        self.0.lookup_value(key, None)
+    }
+    /// A value of type `T`, if present and of that type.
+    pub fn get<T: glib::variant::FromVariant>(&self, key: &str) -> Option<T> {
+        self.value(key)?.get()
+    }
+    /// A string or object path.
+    pub fn str(&self, key: &str) -> String {
+        self.value(key)
+            .and_then(|v| v.str().map(String::from))
+            .unwrap_or_default()
+    }
+    pub fn u32(&self, key: &str) -> u32 {
+        self.get(key).unwrap_or_default()
+    }
+    pub fn bool(&self, key: &str) -> bool {
+        self.get(key).unwrap_or_default()
+    }
+    pub fn bytes(&self, key: &str) -> Vec<u8> {
+        self.get(key).unwrap_or_default()
+    }
+    /// An array of strings or object paths.
+    pub fn paths(&self, key: &str) -> Vec<String> {
+        self.value(key)
+            .filter(|v| v.is_container())
+            .map(|v| v.iter().filter_map(|c| c.str().map(String::from)).collect())
+            .unwrap_or_default()
+    }
+    /// An array of dictionaries (`aa{sv}`).
+    pub fn dicts(&self, key: &str) -> Vec<Dict> {
+        self.value(key)
+            .filter(|v| v.is_container())
+            .map(|v| v.iter().map(|c| Dict::from(&c)).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// One entry of a string-keyed dictionary of dictionaries (`a{sa{sv}}`), such
+/// as a section of NetworkManager connection settings or one interface of a
+/// D-Bus object in `GetManagedObjects`.
+pub fn section(dicts: &glib::Variant, name: &str) -> Option<Dict> {
+    if !dicts.is_container() {
+        return None;
+    }
+    dicts
+        .iter()
+        .find(|entry| entry.n_children() == 2 && entry.child_value(0).str() == Some(name))
+        .map(|entry| Dict::from(&entry.child_value(1)))
+}
+
+/// Calls `f` (at most about once a second) whenever the system-bus service
+/// `name` sends any signal, such as a property change. The subscription lasts
+/// for the life of the program.
+pub fn watch_system_service(name: &str, f: impl Fn() + 'static) {
+    let Ok(bus) = gio::bus_get_sync(gio::BusType::System, None::<&gio::Cancellable>) else {
+        return;
+    };
+    let pending = Rc::new(Cell::new(false));
+    let f = Rc::new(f);
+    let sub = bus.subscribe_to_signal(
+        Some(name),
+        None,
+        None,
+        None,
+        None,
+        gio::DBusSignalFlags::NONE,
+        move |_| {
+            if pending.replace(true) {
+                return;
+            }
+            let (pending, f) = (pending.clone(), f.clone());
+            glib::timeout_add_local_once(std::time::Duration::from_millis(800), move || {
+                pending.set(false);
+                f();
+            });
+        },
+    );
+    // Pages live as long as the app, so keep the subscription forever.
+    std::mem::forget(sub);
+}
+
 // ---------------------------------------------------------------------------
 // Commands and files
 
@@ -382,5 +474,29 @@ impl Toggle {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn sections() {
+        let mut wifi: HashMap<String, glib::Variant> = HashMap::new();
+        wifi.insert("ssid".into(), b"Home".to_vec().to_variant());
+        let mut all: HashMap<String, HashMap<String, glib::Variant>> = HashMap::new();
+        all.insert("802-11-wireless".into(), wifi);
+        let v = all.to_variant();
+        let w = section(&v, "802-11-wireless").unwrap();
+        assert_eq!(w.bytes("ssid"), b"Home");
+        assert!(section(&v, "ipv4").is_none());
+        // The wrong type gives an empty dictionary instead of a panic.
+        assert_eq!(Dict::from(&v).str("anything"), "");
+        assert!(section(&"text".to_variant(), "x").is_none());
+        // A value of the wrong type reads as missing.
+        assert_eq!(w.get::<u32>("ssid"), None);
+        assert!(w.paths("ssid").is_empty());
     }
 }

@@ -4,14 +4,13 @@
 //! Reads are synchronous: they go to a local service and are fast. Changes
 //! are asynchronous and allow polkit to ask for authorization.
 
-use std::cell::Cell;
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::time::Duration;
 
 use gtk::glib::variant::ObjectPath;
 use gtk::prelude::*;
 use gtk::{gio, glib};
+
+use crate::sys::{self, Dict, section as settings_section};
 
 pub const SERVICE: &str = "org.freedesktop.NetworkManager";
 const ROOT: &str = "/org/freedesktop/NetworkManager";
@@ -76,57 +75,6 @@ async fn call(
 fn object_path(p: &str) -> ObjectPath {
     ObjectPath::try_from(p.to_string())
         .unwrap_or_else(|_| ObjectPath::try_from("/".to_string()).unwrap())
-}
-
-/// A string-keyed dictionary of D-Bus values (`a{sv}`).
-pub struct Dict(glib::VariantDict);
-
-impl Dict {
-    /// Wraps an `a{sv}` value. Anything else gives an empty dictionary, so
-    /// unexpected data from the service can't crash the app.
-    fn from(v: &glib::Variant) -> Self {
-        let ok = v.type_() == glib::VariantTy::VARDICT;
-        Dict(glib::VariantDict::new(ok.then_some(v)))
-    }
-    fn value(&self, key: &str) -> Option<glib::Variant> {
-        self.0.lookup_value(key, None)
-    }
-    /// A string or object path.
-    pub fn str(&self, key: &str) -> String {
-        self.value(key)
-            .and_then(|v| v.str().map(String::from))
-            .unwrap_or_default()
-    }
-    pub fn u32(&self, key: &str) -> u32 {
-        self.value(key).and_then(|v| v.get()).unwrap_or_default()
-    }
-    pub fn bool(&self, key: &str) -> bool {
-        self.value(key).and_then(|v| v.get()).unwrap_or_default()
-    }
-    pub fn bytes(&self, key: &str) -> Vec<u8> {
-        self.value(key).and_then(|v| v.get()).unwrap_or_default()
-    }
-    /// An array of object paths.
-    pub fn paths(&self, key: &str) -> Vec<String> {
-        self.value(key)
-            .map(|v| v.iter().filter_map(|c| c.str().map(String::from)).collect())
-            .unwrap_or_default()
-    }
-    /// An array of dictionaries (`aa{sv}`).
-    fn dicts(&self, key: &str) -> Vec<Dict> {
-        self.value(key)
-            .map(|v| v.iter().map(|c| Dict::from(&c)).collect())
-            .unwrap_or_default()
-    }
-}
-
-/// One section of a connection's settings (`a{sa{sv}}`, as returned by
-/// `GetSettings`), such as `802-11-wireless`.
-fn settings_section(settings: &glib::Variant, name: &str) -> Option<Dict> {
-    settings
-        .iter()
-        .find(|entry| entry.child_value(0).str() == Some(name))
-        .map(|entry| Dict::from(&entry.child_value(1)))
 }
 
 /// All properties of one interface of an object.
@@ -472,8 +420,7 @@ pub fn wifi_devices() -> Vec<WifiDevice> {
                 .unwrap_or_default();
             let last_scan = w
                 .as_ref()
-                .and_then(|w| w.value("LastScan"))
-                .and_then(|v| v.get::<i64>())
+                .and_then(|w| w.get::<i64>("LastScan"))
                 .unwrap_or(-1);
             let mut access_points = vec![];
             for ap in w.map(|w| w.paths("AccessPoints")).unwrap_or_default() {
@@ -485,7 +432,7 @@ pub fn wifi_devices() -> Vec<WifiDevice> {
                     continue; // hidden network
                 }
                 access_points.push(Network {
-                    strength: p.value("Strength").and_then(|v| v.get::<u8>()).unwrap_or(0),
+                    strength: p.get::<u8>("Strength").unwrap_or(0),
                     security: Security::from_flags(
                         p.u32("Flags"),
                         p.u32("WpaFlags"),
@@ -573,29 +520,7 @@ pub fn valid_psk(pw: &str) -> bool {
 /// Calls `f` (at most about once a second) whenever any NetworkManager object
 /// changes. The subscription lasts for the life of the program.
 pub fn watch(f: impl Fn() + 'static) {
-    let Some(bus) = bus() else { return };
-    let pending = Rc::new(Cell::new(false));
-    let f = Rc::new(f);
-    let sub = bus.subscribe_to_signal(
-        Some(SERVICE),
-        None,
-        None,
-        None,
-        None,
-        gio::DBusSignalFlags::NONE,
-        move |_| {
-            if pending.replace(true) {
-                return;
-            }
-            let (pending, f) = (pending.clone(), f.clone());
-            glib::timeout_add_local_once(Duration::from_millis(800), move || {
-                pending.set(false);
-                f();
-            });
-        },
-    );
-    // Pages live as long as the app, so keep the subscription forever.
-    std::mem::forget(sub);
+    sys::watch_system_service(SERVICE, f);
 }
 
 #[cfg(test)]
@@ -619,20 +544,6 @@ mod tests {
     #[test]
     fn read_saved_connections() {
         let _ = saved_wifi();
-    }
-
-    #[test]
-    fn settings_sections() {
-        let mut wifi: HashMap<String, glib::Variant> = HashMap::new();
-        wifi.insert("ssid".into(), b"Home".to_vec().to_variant());
-        let mut all: HashMap<String, HashMap<String, glib::Variant>> = HashMap::new();
-        all.insert("802-11-wireless".into(), wifi);
-        let v = all.to_variant();
-        let w = settings_section(&v, "802-11-wireless").unwrap();
-        assert_eq!(w.bytes("ssid"), b"Home");
-        assert!(settings_section(&v, "ipv4").is_none());
-        // The wrong type gives an empty dictionary instead of a panic.
-        assert_eq!(Dict::from(&v).str("anything"), "");
     }
 
     fn ap(ssid: &str, strength: u8, active: bool) -> Network {

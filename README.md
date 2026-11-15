@@ -16,6 +16,7 @@ First version. Written in Rust with GTK 4. The only crate dependency is `gtk4` (
 | --- | --- | --- |
 | Wi-Fi | Turn Wi-Fi on/off; list nearby networks with signal strength and security; connect (asks for a password for WPA/WPA2/WPA3 networks), disconnect, forget saved networks; connection details | NetworkManager over D-Bus |
 | Network | Wired devices, plus Bluetooth, mobile broadband, WireGuard, bond, VLAN and team devices: status, connect/disconnect, IP addresses, gateway, DNS, speed, hardware address | NetworkManager over D-Bus |
+| Bluetooth | Turn each adapter on/off, rename it, make it visible to other devices; list paired devices (kind, connection, battery level) with connect, disconnect and forget; search for nearby devices while the page is open and pair with them, answering pairing-code prompts (confirm a code, type a PIN or passkey, or show one to type on the device) | BlueZ over D-Bus, with its own pairing agent |
 | Appearance | Color scheme (light/dark), GTK theme, icon theme, cursor theme and size, interface font | The `org.gnome.desktop.interface` GSettings keys, if that schema is installed (read by GTK, `xdg-desktop-portal` and others); `~/.config/gtk-3.0/settings.ini` and `~/.config/gtk-4.0/settings.ini`; `~/.icons/default/index.theme` for the XCursor fallback |
 | Displays | Lists connected monitors: connector, model, resolution, scale, position, refresh rate, physical size (read-only) | GDK |
 | Sound | Default output and input device, volume, mute | `pactl` (works with PulseAudio and with PipeWire through pipewire-pulse) |
@@ -27,9 +28,11 @@ System-wide changes (time zone, language, keyboard, hostname) go through polkit,
 
 If a service or tool is missing, its page says so instead of failing.
 
+On the Bluetooth page, the app registers itself with BlueZ as the pairing agent (the program that shows pairing codes) while it runs, so pairing works whatever desktop is in use. When the app exits, BlueZ goes back to the previous agent, if there was one. After pairing, a device is marked as trusted, so it can reconnect by itself, and then connected. Nearby devices that haven't sent a name (usually beacons and other gadgets that can't be paired) are not listed.
+
 ### Not included (yet)
 
-Wi-Fi networks using enterprise (802.1X) or WEP security, hidden networks, and editing connection settings (such as static IP addresses) are not supported yet.
+Wi-Fi networks using enterprise (802.1X) or WEP security, hidden networks, and editing connection settings (such as static IP addresses) are not supported yet. Bluetooth file transfer, renaming or blocking devices, and choosing audio profiles (such as high-quality playback or headset mode) are not included yet.
 
 Settings with no standard interface shared by X11 and the various Wayland compositors are left out for now. These include monitor arrangement and resolution, pointer and touchpad settings, keyboard repeat rate, and per-session keyboard layouts. They can be added once the window manager or compositor is chosen.
 
@@ -52,6 +55,7 @@ Runtime tools used if present: `pactl` (Sound page) and `locale` (list of instal
 ## Code layout
 
 - `src/main.rs` — application, window, sidebar
-- `src/sys.rs` — D-Bus and command helpers, row/group layout helpers, `Choice` (a drop-down) and `Toggle` (a switch). Both undo the change and show an error if applying it fails.
+- `src/sys.rs` — D-Bus and command helpers (including `Dict`, for reading `a{sv}` dictionaries safely), row/group layout helpers, `Choice` (a drop-down) and `Toggle` (a switch). Both undo the change and show an error if applying it fails.
 - `src/nm.rs` — a small NetworkManager D-Bus client
+- `src/bluez.rs` — a small BlueZ D-Bus client and pairing agent
 - `src/pages/*.rs` — one module per page
