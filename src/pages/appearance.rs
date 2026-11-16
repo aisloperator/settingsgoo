@@ -94,6 +94,9 @@ impl Store {
     }
 
     fn set(&self, key: &Key, value: Value) -> Result<(), String> {
+        if matches!(&value, Value::Str(v) if v.is_empty()) {
+            return self.unset(key);
+        }
         if let Some(s) = self.gsettings_key(key.gsettings) {
             match &value {
                 Value::Str(v) => s.set_string(key.gsettings, v),
@@ -118,6 +121,55 @@ impl Store {
         }
         Ok(())
     }
+
+    /// Undoes a setting ("(not set)" in a drop-down): resets the GSettings key
+    /// to its default and removes the key from the files, instead of writing
+    /// an empty value. An empty cursor theme in particular hides the system's
+    /// default theme, so named cursors such as the link pointer go missing.
+    fn unset(&self, key: &Key) -> Result<(), String> {
+        if let Some(s) = self.gsettings_key(key.gsettings) {
+            s.reset(key.gsettings);
+        }
+        for dir in ["gtk-3.0", "gtk-4.0"] {
+            remove_key_file(
+                &glib::user_config_dir().join(dir).join("settings.ini"),
+                "Settings",
+                key.ini,
+            )?;
+        }
+        if key.ini == CURSOR_THEME.ini {
+            let dir = glib::home_dir().join(".icons/default");
+            remove_key_file(&dir.join("index.theme"), "Icon Theme", "Inherits")?;
+            // Only goes if empty, i.e. it held nothing but that file.
+            let _ = std::fs::remove_dir(&dir);
+        }
+        if let Some(gs) = gtk::Settings::default() {
+            gs.reset_property(key.ini);
+        }
+        Ok(())
+    }
+}
+
+/// Removes a key from a key file, and the group if that leaves it empty. A
+/// file left with nothing in it is deleted; a missing file is left alone.
+fn remove_key_file(path: &PathBuf, group: &str, key: &str) -> Result<(), String> {
+    let kf = glib::KeyFile::new();
+    if kf
+        .load_from_file(path, glib::KeyFileFlags::KEEP_COMMENTS)
+        .is_err()
+        || !kf.has_key(group, key).unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let _ = kf.remove_key(group, key);
+    if kf.keys(group).map(|k| k.is_empty()).unwrap_or(false) {
+        let _ = kf.remove_group(group);
+    }
+    if kf.groups().is_empty() && kf.to_data().trim().is_empty() {
+        return std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()));
+    }
+    kf.save_to_file(path)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn write_gtk_ini(key: &str, value: &Value) -> Result<(), String> {
@@ -314,4 +366,55 @@ pub fn build() -> gtk::Widget {
     }
 
     page.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("settingsgoo-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn unset_after_set_removes_created_file() {
+        let dir = temp_dir("created");
+        let path = dir.join("index.theme");
+        write_key_file(
+            &path,
+            "Icon Theme",
+            "Inherits",
+            &Value::Str("Adwaita".into()),
+        )
+        .unwrap();
+        assert!(path.exists());
+        remove_key_file(&path, "Icon Theme", "Inherits").unwrap();
+        assert!(!path.exists());
+        // Missing file: nothing to do.
+        remove_key_file(&path, "Icon Theme", "Inherits").unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unset_keeps_other_keys() {
+        let dir = temp_dir("kept");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.ini");
+        std::fs::write(&path, "# mine\n[Settings]\ngtk-theme-name=Foo\n").unwrap();
+        write_key_file(
+            &path,
+            "Settings",
+            "gtk-cursor-theme-name",
+            &Value::Str("Adwaita".into()),
+        )
+        .unwrap();
+        remove_key_file(&path, "Settings", "gtk-cursor-theme-name").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# mine"));
+        assert!(text.contains("gtk-theme-name=Foo"));
+        assert!(!text.contains("cursor"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
