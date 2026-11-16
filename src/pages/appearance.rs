@@ -122,6 +122,31 @@ impl Store {
         Ok(())
     }
 
+    /// The value written for a setting by the user (in GSettings, the GTK
+    /// `settings.ini` files or, for the cursor, `~/.icons/default`), or empty
+    /// if none is. Unlike the effective value in `GtkSettings`, this tells
+    /// "(not set)" apart from a theme that happens to be the default.
+    fn configured(&self, key: &Key) -> String {
+        let mut found = Vec::new();
+        if let Some(s) = self.gsettings_key(key.gsettings)
+            && s.user_value(key.gsettings).is_some()
+        {
+            found.push(s.string(key.gsettings).to_string());
+        }
+        for dir in ["gtk-4.0", "gtk-3.0"] {
+            let path = glib::user_config_dir().join(dir).join("settings.ini");
+            found.extend(read_key_file(&path, "Settings", key.ini));
+        }
+        if key.ini == CURSOR_THEME.ini {
+            let path = glib::home_dir().join(".icons/default/index.theme");
+            found.extend(read_key_file(&path, "Icon Theme", "Inherits"));
+        }
+        found
+            .into_iter()
+            .find(|v| !v.is_empty())
+            .unwrap_or_default()
+    }
+
     /// Undoes a setting ("(not set)" in a drop-down): resets the GSettings key
     /// to its default and removes the key from the files, instead of writing
     /// an empty value. An empty cursor theme in particular hides the system's
@@ -148,6 +173,12 @@ impl Store {
         }
         Ok(())
     }
+}
+
+fn read_key_file(path: &PathBuf, group: &str, key: &str) -> Option<String> {
+    let kf = glib::KeyFile::new();
+    kf.load_from_file(path, glib::KeyFileFlags::NONE).ok()?;
+    kf.string(group, key).ok().map(|s| s.to_string())
 }
 
 /// Removes a key from a key file, and the group if that leaves it empty. A
@@ -290,7 +321,10 @@ pub fn build() -> gtk::Widget {
                          subtitle: &str,
                          items: Vec<String>,
                          key: &'static Key| {
-        let choice = Choice::new(&sys::same(&items), &current_str(key.ini));
+        // "(not set)" is always offered, so a theme can be undone.
+        let mut items = sys::same(&items);
+        items.insert(0, (String::new(), "(not set)".to_string()));
+        let choice = Choice::new(&items, &store.configured(key));
         let s = store.clone();
         choice.on_change(move |v| {
             let s = s.clone();
